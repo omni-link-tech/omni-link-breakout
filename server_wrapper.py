@@ -1,6 +1,6 @@
 import sys, re, threading, time, json
 import pygame
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import paho.mqtt.client as mqtt
 
 from breakout import Breakout
@@ -11,7 +11,7 @@ MQTT_BROKER   = "localhost"
 MQTT_PORT     = 1883
 CMD_TOPIC     = "olink/commands"
 CTX_TOPIC     = "olink/context"
-PUBLISH_EVERY = 5
+PUBLISH_EVERY = 20
 
 # ── Shared state ───────────────────────────────────────────────────────────────
 _GAME: Breakout = None
@@ -34,7 +34,7 @@ def _build_state(game: Breakout) -> dict:
         "level":        game.level,
         "lives":        game.lives,
         "play_time":    game.play_time,
-        "game_state":   game.state,   # TITLE | PLAY | PAUSE | GAMEOVER | VICTORY
+        "game_state":   game.state,   # TITLE | PLAY | PAUSE | GAMEOVER
         "width":        640,
         "height":       720,
     }
@@ -111,7 +111,7 @@ def _publisher_loop(client):
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             client.publish(CTX_TOPIC, json.dumps(payload))
-            print(f"[MQTT] → '{CTX_TOPIC}': score={g.score1} level={g.level} lives={g.lives}")
+            print(f"[MQTT] > '{CTX_TOPIC}': score={g.score1} level={g.level} lives={g.lives}")
 
 def start_mqtt():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -174,11 +174,17 @@ class BreakoutAPIHandler(BaseHTTPRequestHandler):
                 for act in actions:
                     act_str = str(act).upper()
                     if act_str in ("LEFT", "RIGHT", "STOP"):
-                        _GAME.pending_actions.append(act_str)
+                        _GAME.current_action = act_str
+                    elif act_str in ("RESUME", "START"):
+                        if _GAME.state == "PAUSE":
+                            _GAME.toggle_pause()
             elif action and isinstance(action, str) and _GAME:
                 act_str = action.upper()
                 if act_str in ("LEFT", "RIGHT", "STOP"):
-                    _GAME.pending_actions.append(act_str)
+                    _GAME.current_action = act_str
+                elif act_str in ("RESUME", "START"):
+                    if _GAME.state == "PAUSE":
+                        _GAME.toggle_pause()
         except Exception as e:
             print(f"[HTTP] /callback parse error: {e}")
 
@@ -188,7 +194,7 @@ class BreakoutAPIHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"status":"ok"}')
 
 def run_http():
-    server = HTTPServer(("", HTTP_PORT), BreakoutAPIHandler)
+    server = ThreadingHTTPServer(("", HTTP_PORT), BreakoutAPIHandler)
     print(f"[HTTP] API on port {HTTP_PORT}")
     server.serve_forever()
 
